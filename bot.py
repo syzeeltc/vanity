@@ -9,8 +9,8 @@ VANITY_CODES = [c.strip() for c in os.getenv("VANITY_CODES", "").split(",") if c
 GUILD_ID = int(os.getenv("GUILD_ID"))
 CHANNEL_ID = int(os.getenv("CHANNEL_ID")) if os.getenv("CHANNEL_ID") else None
 YOUR_ID = int(os.getenv("YOUR_ID"))
-CHECK_INTERVAL = 1  # co 1 minutę sprawdza wszystkie
-ALERT_COOLDOWN_MINUTES = 30  # po alarmie czeka 30 min zanim znowu alarmuje ten kod
+CHECK_INTERVAL = 1  # co 1 minutę
+ALERT_COOLDOWN_MINUTES = 120  # przypomnienie o 404 co 2h (zamiast 30min)
 
 class SmartVanityBot(commands.Bot):
     def __init__(self):
@@ -18,13 +18,13 @@ class SmartVanityBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.session = None
-        # Historia: code -> {"status": "taken"|"free"|"unknown", "since": datetime, "last_alert": datetime|None}
+        # Historia: code -> {"status": "taken"|"free"|"unknown", "since": datetime, "last_alert": datetime|None, "owner": str|None}
         self.history = {}
         self.init_history()
 
     def init_history(self):
         for code in VANITY_CODES:
-            self.history[code] = {"status": "unknown", "since": datetime.utcnow(), "last_alert": None}
+            self.history[code] = {"status": "unknown", "since": datetime.utcnow(), "last_alert": None, "owner": None}
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
@@ -32,7 +32,7 @@ class SmartVanityBot(commands.Bot):
 
     async def on_ready(self):
         print(f"Bot zalogowany jako {self.user}")
-        print(f"Smart Monitor aktywny dla: {', '.join(VANITY_CODES)}")
+        print(f"Smart Monitor: {', '.join(VANITY_CODES)}")
         guild = self.get_guild(GUILD_ID)
         if guild:
             print(f"Serwer: {guild.name} (boost tier: {guild.premium_tier})")
@@ -51,32 +51,55 @@ class SmartVanityBot(commands.Bot):
             else:
                 return f"error_{resp.status}", None
 
-    async def send_alert(self, code: str, prev_owner: str, user: discord.User, channel):
-        embed = discord.Embed(
-            title="Vanity URL Monitor",
-            description=f"Kod `discord.gg/{code}` **WŁAŚNIE SIĘ ZWOLNIŁ**!",
-            color=0x00FF00,
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Poprzedni właściciel", value=prev_owner or "Nieznany", inline=False)
-        embed.add_field(
-            name="Co zrobić?",
-            value="Wejdź w **Ustawienia serwera → Zaproszenia → Custom Link** i ustaw go NATYCHMIAST!",
-            inline=False
-        )
-        embed.set_footer(text="To jest PRAWDZIWE zwolnienie (kod był zajęty, teraz jest wolny). Szybko!")
+    async def send_alert(self, code: str, prev_owner: str, user: discord.User, channel, is_real_release: bool):
+        if is_real_release:
+            # Prawdziwe zwolnienie (był zajęty, teraz wolny)
+            embed = discord.Embed(
+                title="Vanity URL Monitor",
+                description=f"Kod `discord.gg/{code}` **WŁAŚNIE SIĘ ZWOLNIŁ**!",
+                color=0x00FF00,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Poprzedni właściciel", value=prev_owner or "Nieznany", inline=False)
+            embed.add_field(
+                name="Co zrobić?",
+                value="Wejdź w **Ustawienia serwera → Zaproszenia → Custom Link** i ustaw go NATYCHMIAST!",
+                inline=False
+            )
+            embed.set_footer(text="To jest PRAWDZIWE zwolnienie! Szybko!")
+            ping_msg = f"<@{YOUR_ID}> 🚨 **Vanity `discord.gg/{code}` WŁAŚNIE SIĘ ZWOLNIŁ!**"
+        else:
+            # Przypomnienie o kodzie 404 (może być wolny lub zbanowany)
+            embed = discord.Embed(
+                title="Vanity URL Monitor",
+                description=f"Kod `discord.gg/{code}` zwraca **404**.",
+                color=0xFFA500,
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(
+                name="Status",
+                value="Kod jest niedostępny. Może być **wolny** lub w cooldown/zbanowany.",
+                inline=False
+            )
+            embed.add_field(
+                name="Co zrobić?",
+                value="Wejdź w **Ustawienia serwera → Zaproszenia → Custom Link** i sprawdź czy da się ustawić.",
+                inline=False
+            )
+            embed.set_footer(text="Sprawdź teraz! Jeśli da się ustawić — masz vanity!")
+            ping_msg = f"<@{YOUR_ID}> ⚠️ Vanity `discord.gg/{code}` może być wolny! Sprawdź w ustawieniach serwera!"
 
         dm_sent = False
         try:
             await user.send(embed=embed)
-            print(f"Wyslano DM do {user} o {code}")
+            print(f"Wyslano DM do {user} o {code} ({'ZWOLNIENIE' if is_real_release else 'przypomnienie'})")
             dm_sent = True
         except discord.Forbidden:
             print(f"Nie moge wyslac DM do {user}")
 
         if channel:
             try:
-                msg = f"<@{YOUR_ID}> 🚨 **Vanity `discord.gg/{code}` WŁAŚNIE SIĘ ZWOLNIŁ!**"
+                msg = ping_msg
                 if dm_sent:
                     msg += " (DM wysłane)"
                 await channel.send(msg, embed=embed)
@@ -95,18 +118,14 @@ class SmartVanityBot(commands.Bot):
             hist = self.history[code]
             status, info = await self.check_vanity(code)
 
-            # Sprawdź cooldown alarmu
+            # Sprawdź czy można wysłać alert (cooldown)
+            can_alert = True
             if hist["last_alert"]:
                 time_since_alert = now - hist["last_alert"]
                 if time_since_alert < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
-                    # W cooldownzie — aktualizuj status ale nie alarmuj
-                    hist["status"] = status
-                    hist["since"] = now
-                    print(f"{code}: {status} (w cooldownie alarmu)")
-                    continue
+                    can_alert = False
 
             if status == "taken":
-                # Kod zajęty — aktualizuj historię
                 if hist["status"] != "taken":
                     print(f"{code}: teraz zajety przez {info}")
                 else:
@@ -116,23 +135,25 @@ class SmartVanityBot(commands.Bot):
                 hist["owner"] = info
 
             elif status == "free":
-                # Kod zwraca 404
                 if hist["status"] == "taken":
-                    # BYŁ ZAJĘTY, TERAZ WOLNY -> ALARM!
+                    # BYŁ ZAJĘTY, TERAZ WOLNY -> ALARM NATYCHMIASTOWY
                     prev_owner = hist.get("owner", "Nieznany")
                     print(f"🚨 {code}: ZWOLNIONY! (był: {prev_owner})")
-                    await self.send_alert(code, prev_owner, user, channel)
+                    await self.send_alert(code, prev_owner, user, channel, is_real_release=True)
                     hist["last_alert"] = now
                     hist["status"] = "free"
                     hist["since"] = now
-                elif hist["status"] == "unknown":
-                    # Pierwszy check i od razu 404 — może być zbanowany, nie alarmujemy
-                    print(f"{code}: 404 od startu (zbanowany/cooldown?) — ciche monitorowanie")
+                elif hist["status"] in ("unknown", "free"):
+                    # Kod jest 404 od startu lub nadal 404
+                    if can_alert:
+                        # Można wysłać przypomnienie
+                        print(f"⚠️ {code}: 404 — wysylam przypomnienie")
+                        await self.send_alert(code, None, user, channel, is_real_release=False)
+                        hist["last_alert"] = now
+                    else:
+                        time_left = ALERT_COOLDOWN_MINUTES - (now - hist["last_alert"]).seconds // 60
+                        print(f"{code}: 404 (przypomnienie za {time_left} min)")
                     hist["status"] = "free"
-                    hist["since"] = now
-                else:
-                    # Nadal 404 — ciche logowanie
-                    print(f"{code}: nadal 404 (zbanowany/cooldown)")
                     hist["since"] = now
 
             elif status == "ratelimit":
@@ -161,7 +182,7 @@ class SmartVanityBot(commands.Bot):
             if hist.get("status") == "taken":
                 await ctx.send(f"🚨 `discord.gg/{code}` **WŁAŚNIE SIĘ ZWOLNIŁ**! Sprawdź w ustawieniach serwera!")
             else:
-                await ctx.send(f"⚠️ `discord.gg/{code}` zwraca 404. Może być wolny LUB zbanowany/cooldown.")
+                await ctx.send(f"⚠️ `discord.gg/{code}` zwraca **404**. Może być wolny lub w cooldown. Sprawdź w ustawieniach serwera!")
         elif status == "ratelimit":
             await ctx.send(f"⏳ Rate limit — spróbuj później.")
         else:
@@ -173,14 +194,12 @@ class SmartVanityBot(commands.Bot):
         for code, hist in self.history.items():
             status = hist["status"]
             since = hist["since"].strftime("%H:%M:%S")
+            last_alert = hist["last_alert"].strftime("%H:%M:%S") if hist["last_alert"] else "brak"
             if status == "taken":
                 owner = hist.get("owner", "???")
                 val = f"❌ Zajęty przez: {owner}\n🕒 od {since}"
             elif status == "free":
-                if hist.get("last_alert"):
-                    val = f"⚠️ 404 — alarm wysłano {hist['last_alert'].strftime('%H:%M:%S')}"
-                else:
-                    val = f"🔇 404 od startu (zbanowany/cooldown?)\n🕒 od {since}"
+                val = f"⚠️ 404 (wolny/cooldown)\n🕒 od {since}\n📢 alarm: {last_alert}"
             else:
                 val = f"❓ Nieznany\n🕒 od {since}"
             embed.add_field(name=f"discord.gg/{code}", value=val, inline=False)
@@ -191,7 +210,7 @@ class SmartVanityBot(commands.Bot):
         if code:
             if code in self.history:
                 self.history[code]["last_alert"] = None
-                await ctx.send(f"Resetowano alarm dla `{code}`.")
+                await ctx.send(f"Resetowano alarm dla `{code}`. Następne sprawdzenie wyśle powiadomienie.")
             else:
                 await ctx.send(f"Nie znam kodu `{code}`.")
         else:
