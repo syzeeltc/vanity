@@ -33,8 +33,15 @@ TARGET_URLS = [
     "wymienwalute"
 ]
 
+# ========== CZARNA LISTA ==========
+BLACKLIST = [
+    "wymieniano",
+    "wymienwalute"
+]
+
 # ========== PAMIĘĆ STATUSÓW ==========
 last_known_status = {}
+already_notified = {}  # <---- NOWA FLAGA!
 
 # ========== KONFIGURACJA BOTA ==========
 intents = discord.Intents.default()
@@ -43,12 +50,14 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ========== SPRAWDZANIE JEDNEJ VANITY ==========
 def check_single_vanity(vanity_name):
+    if vanity_name in BLACKLIST:
+        return "BLACKLISTED", None
+    
     url = f"https://discord.com/api/v9/invites/{vanity_name}"
     
     try:
         r = requests.get(url)
         
-        # ===== 200 =====
         if r.status_code == 200:
             data = r.json()
             guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
@@ -59,37 +68,18 @@ def check_single_vanity(vanity_name):
             else:
                 return "TAKEN", guild_name
         
-        # ===== 404 =====
         elif r.status_code == 404:
-            try:
-                error_data = r.json()
-                error_msg = error_data.get("message", "").lower()
-                
-                # Sprawdź czy to ban
-                if "invalid" in error_msg or "banned" in error_msg or "suspended" in error_msg:
-                    return "BANNED", None
-                else:
-                    # 404 = nie istnieje = WOLNE!
-                    print(f"🔥 {vanity_name}: 404 -> WOLNE!")
-                    return "FREE", None
-            except:
-                # Jeśli nie ma JSON (np. błąd) -> też uznajemy za WOLNE
-                print(f"🔥 {vanity_name}: 404 (brak JSON) -> WOLNE!")
-                return "FREE", None
+            return "FREE", None
         
-        # ===== 429 =====
         elif r.status_code == 429:
             print(f"⏳ Rate limit dla {vanity_name}, czekam 60s...")
             time.sleep(60)
             return check_single_vanity(vanity_name)
         
-        # ===== 403 =====
         elif r.status_code == 403:
             return "BANNED", None
         
-        # ===== INNE =====
         else:
-            print(f"⚠️ {vanity_name}: status {r.status_code}")
             return "UNKNOWN", None
             
     except Exception as e:
@@ -144,6 +134,8 @@ async def vanity_cmd(ctx):
             emoji = "⏳"
         elif status == "OWN_SERVER":
             emoji = "✅"
+        elif status == "BLACKLISTED":
+            emoji = "🚫"
         else:
             emoji = "⚠️"
         message += f"{emoji} `{vanity_name}`: {status}\n"
@@ -166,8 +158,33 @@ async def check_cmd(ctx, *, vanity_name: str = None):
         await ctx.send(f"⏳ `{vanity_name}` jest ZAJĘTE przez: {guild_name}")
     elif status == "OWN_SERVER":
         await ctx.send(f"✅ `{vanity_name}` należy do TWOJEGO serwera!")
+    elif status == "BLACKLISTED":
+        await ctx.send(f"🚫 `{vanity_name}` jest na CZARNEJ LIŚCIE (ztermowane)")
     else:
         await ctx.send(f"⚠️ Nieznany status: {status}")
+
+@bot.command(name="blacklist")
+async def blacklist_cmd(ctx, *, vanity_name: str = None):
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha może to robić!")
+        return
+    
+    if not vanity_name:
+        current = "📋 **CZARNA LISTA:**\n"
+        if BLACKLIST:
+            for v in BLACKLIST:
+                current += f"🚫 `{v}`\n"
+        else:
+            current += "✅ Pusto!"
+        await ctx.send(current)
+        return
+    
+    if vanity_name in BLACKLIST:
+        BLACKLIST.remove(vanity_name)
+        await ctx.send(f"✅ Usunięto `{vanity_name}` z czarnej listy!")
+    else:
+        BLACKLIST.append(vanity_name)
+        await ctx.send(f"✅ Dodano `{vanity_name}` do czarnej listy!")
 
 @bot.command(name="add")
 async def add_cmd(ctx, *, vanity_name: str = None):
@@ -213,7 +230,8 @@ async def list_cmd(ctx):
     
     message = "📋 **MONITOROWANE VANITKI:**\n"
     for i, vanity_name in enumerate(TARGET_URLS, 1):
-        message += f"{i}. `{vanity_name}`\n"
+        banned = "🚫 " if vanity_name in BLACKLIST else ""
+        message += f"{i}. {banned}`{vanity_name}`\n"
     
     await ctx.send(message)
 
@@ -221,14 +239,25 @@ async def list_cmd(ctx):
 async def ping_cmd(ctx):
     await ctx.send(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
 
+@bot.command(name="reset")
+async def reset_cmd(ctx):
+    """Resetuje flagi powiadomień (tylko Alpha)"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha może to robić!")
+        return
+    
+    global already_notified
+    already_notified = {}
+    await ctx.send("✅ Zresetowano flagi powiadomień!")
+
 # ========== GŁÓWNA PĘTLA MONITOROWANIA ==========
 async def monitor_loop():
     await bot.wait_until_ready()
     print("🔍 Rozpoczynam monitorowanie WIELU VANITEK...")
     print(f"🎯 Liczba vanitek: {len(TARGET_URLS)}")
+    print(f"🚫 Czarna lista: {BLACKLIST if BLACKLIST else 'Pusto'}")
     print("=" * 50)
     
-    # Inicjalizacja
     check_all_vanities()
     
     while not bot.is_closed():
@@ -239,16 +268,27 @@ async def monitor_loop():
             for vanity_name, data in results.items():
                 status = data["status"]
                 previous = last_known_status.get(vanity_name, {}).get("status")
+                was_notified = already_notified.get(vanity_name, False)
                 
-                # PINGUJ TYLKO GDY STATUS ZMIENIŁ SIĘ NA "FREE"
-                if status == "FREE" and previous != "FREE":
-                    print(f"🔥🔥🔥 {vanity_name} ZMIENIŁA STATUS NA WOLNE!")
+                # Jeśli vanity jest na czarnej liście – pomiń
+                if vanity_name in BLACKLIST:
+                    continue
+                
+                # Jeśli status zmienił się na FREE i NIE BYŁO POWIADOMIENIA
+                if status == "FREE" and not was_notified:
+                    print(f"🔥🔥🔥 {vanity_name} JEST WOLNE! WYSYŁAM POWIADOMIENIE!")
                     await send_vanity_alert(vanity_name)
+                    already_notified[vanity_name] = True  # <--- ZAPAMIĘTUJEMY ŻE WYSŁALIŚMY
                 
-                # Aktualizuj pamięć
+                # Jeśli status przestał być FREE (zajęte, własny serwer) – resetujemy flagę
+                elif status in ["TAKEN", "OWN_SERVER", "BANNED"] and was_notified:
+                    print(f"🔄 {vanity_name} zmieniła status na {status} – resetuję flagę powiadomienia")
+                    already_notified[vanity_name] = False
+                
+                # Aktualizuj pamięć statusów
                 last_known_status[vanity_name] = {"status": status, "guild_name": data.get("guild_name")}
             
-            await asyncio.sleep(30)  # Co 30 sekund
+            await asyncio.sleep(30)
                 
         except Exception as e:
             print(f"💀 Błąd w pętli: {e}")
@@ -261,6 +301,7 @@ async def on_ready():
     print(f"📋 Monitorowane vanitki ({len(TARGET_URLS)}):")
     for v in TARGET_URLS:
         print(f"   - {v}")
+    print(f"🚫 Czarna lista: {BLACKLIST if BLACKLIST else 'Pusto'}")
     print(f"📢 Kanał: {CHANNEL_ID}")
     print(f"👤 Powiadomienia dla: {YOUR_USER_ID}")
     print("=" * 50)
