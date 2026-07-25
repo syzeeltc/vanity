@@ -47,7 +47,6 @@ def check_single_vanity(vanity_name):
     try:
         r = requests.get(url)
         
-        # ===== 200 =====
         if r.status_code == 200:
             data = r.json()
             guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
@@ -58,17 +57,14 @@ def check_single_vanity(vanity_name):
             else:
                 return "TAKEN", guild_name
         
-        # ===== 404 =====
         elif r.status_code == 404:
             try:
                 error_data = r.json()
                 error_msg = error_data.get("message", "").lower()
                 
-                # Sprawdź czy to ban
                 if "invalid" in error_msg or "banned" in error_msg or "suspended" in error_msg:
                     return "BANNED", None
                 else:
-                    # Sprawdź czy wcześniej była zajęta
                     previous = last_known_status.get(vanity_name)
                     if previous and previous.get("status") in ["TAKEN", "OWN_SERVER"]:
                         return "FREE", None
@@ -77,13 +73,11 @@ def check_single_vanity(vanity_name):
             except:
                 return "UNKNOWN", None
         
-        # ===== 429 =====
         elif r.status_code == 429:
             print(f"⏳ Rate limit dla {vanity_name}, czekam 60s...")
             time.sleep(60)
             return check_single_vanity(vanity_name)
         
-        # ===== 403 =====
         elif r.status_code == 403:
             return "BANNED", None
         
@@ -106,9 +100,6 @@ def check_all_vanities():
 
 # ========== POWIADOMIENIA ==========
 async def send_vanity_alert(vanity_name, status):
-    """Wysyła powiadomienie TYLKO gdy vanity jest WOLNE"""
-    
-    # ⚠️ WYSYŁAJ TYLKO DLA STATUSU "FREE"!
     if status != "FREE":
         print(f"⏳ Pomijam {vanity_name} ({status}) – nie jest wolne")
         return
@@ -117,7 +108,6 @@ async def send_vanity_alert(vanity_name, status):
     emoji = "🔥"
     message = f"🎯 **Vanity:** `{vanity_name}`\n🔗 **Link:** https://discord.gg/{vanity_name}\n⚡ **USTAW TO TERAZ!**"
     
-    # DM
     try:
         user = await bot.fetch_user(YOUR_USER_ID)
         if user:
@@ -127,7 +117,6 @@ async def send_vanity_alert(vanity_name, status):
     except Exception as e:
         print(f"💀 Błąd DM ({vanity_name}): {e}")
     
-    # Kanał
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel:
@@ -136,11 +125,9 @@ async def send_vanity_alert(vanity_name, status):
     except Exception as e:
         print(f"💀 Błąd kanału ({vanity_name}): {e}")
 
-# ========== KOMENDY Z `!` ==========
-
+# ========== KOMENDY ==========
 @bot.command(name="vanity")
 async def vanity_cmd(ctx):
-    """Sprawdza wszystkie monitorowane vanitki"""
     results = check_all_vanities()
     message = "📊 **STATUS VANITEK:**\n"
     
@@ -161,8 +148,11 @@ async def vanity_cmd(ctx):
     await ctx.send(message)
 
 @bot.command(name="check")
-async def check_cmd(ctx, vanity_name: str):
-    """Sprawdza konkretną vanity"""
+async def check_cmd(ctx, *, vanity_name: str = None):
+    if not vanity_name:
+        await ctx.send("❌ Podaj nazwę vanity! np. `!check wymianakasy`")
+        return
+    
     status, guild_name = check_single_vanity(vanity_name)
     
     if status == "FREE":
@@ -177,10 +167,13 @@ async def check_cmd(ctx, vanity_name: str):
         await ctx.send(f"⚠️ Nieznany status: {status}")
 
 @bot.command(name="add")
-async def add_cmd(ctx, vanity_name: str):
-    """Dodaje vanity do listy"""
+async def add_cmd(ctx, *, vanity_name: str = None):
     if ctx.author.id != YOUR_USER_ID:
         await ctx.send("❌ Tylko Alpha może to robić!")
+        return
+    
+    if not vanity_name:
+        await ctx.send("❌ Podaj nazwę vanity! np. `!add wymianakasy`")
         return
     
     if vanity_name in TARGET_URLS:
@@ -190,10 +183,13 @@ async def add_cmd(ctx, vanity_name: str):
         await ctx.send(f"✅ Dodano `{vanity_name}` do monitorowania!")
 
 @bot.command(name="remove")
-async def remove_cmd(ctx, vanity_name: str):
-    """Usuwa vanity z listy"""
+async def remove_cmd(ctx, *, vanity_name: str = None):
     if ctx.author.id != YOUR_USER_ID:
         await ctx.send("❌ Tylko Alpha może to robić!")
+        return
+    
+    if not vanity_name:
+        await ctx.send("❌ Podaj nazwę vanity! np. `!remove wymianakasy`")
         return
     
     if vanity_name not in TARGET_URLS:
@@ -204,7 +200,6 @@ async def remove_cmd(ctx, vanity_name: str):
 
 @bot.command(name="list")
 async def list_cmd(ctx):
-    """Pokazuje listę monitorowanych vanitek"""
     if ctx.author.id != YOUR_USER_ID:
         await ctx.send("❌ Tylko Alpha może to robić!")
         return
@@ -221,7 +216,6 @@ async def list_cmd(ctx):
 
 @bot.command(name="ping")
 async def ping_cmd(ctx):
-    """Sprawdza czy bot żyje"""
     await ctx.send(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
 
 # ========== GŁÓWNA PĘTLA MONITOROWANIA ==========
@@ -231,7 +225,6 @@ async def monitor_loop():
     print(f"🎯 Liczba vanitek: {len(TARGET_URLS)}")
     print("=" * 50)
     
-    # Inicjalizacja statusów
     check_all_vanities()
     
     while not bot.is_closed():
@@ -243,15 +236,13 @@ async def monitor_loop():
                 status = data["status"]
                 previous = last_known_status.get(vanity_name, {}).get("status")
                 
-                # ⚠️ PINGUJ TYLKO GDY STATUS ZMIENIŁ SIĘ NA "FREE"
                 if status == "FREE" and previous != "FREE":
                     print(f"🔥 {vanity_name} ZMIENIŁA STATUS NA WOLNE!")
                     await send_vanity_alert(vanity_name, status)
                 
-                # Aktualizuj pamięć
                 last_known_status[vanity_name] = {"status": status, "guild_name": data.get("guild_name")}
             
-            await asyncio.sleep(30)  # Co 30 sekund
+            await asyncio.sleep(30)
                 
         except Exception as e:
             print(f"💀 Błąd w pętli: {e}")
