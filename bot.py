@@ -1,104 +1,160 @@
 import requests
 import os
 import time
+import discord
+from discord.ext import commands
+import asyncio
 
 # ========== ZMIENNE ŚRODOWISKOWE ==========
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise ValueError("💀 Ustaw DISCORD_TOKEN w Railway Variables!")
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # TOKEN BOTA (NIE TWÓJ!)
+if not BOT_TOKEN:
+    raise ValueError("💀 Ustaw BOT_TOKEN!")
 
-try:
-    GUILD_ID = os.getenv("GUILD_ID")
-    if not GUILD_ID:
-        raise ValueError("💀 Ustaw GUILD_ID w Railway Variables!")
-    GUILD_ID = int(GUILD_ID)
-except ValueError:
-    raise ValueError("💀 GUILD_ID musi być liczbą (samymi cyframi)!")
+GUILD_ID = os.getenv("GUILD_ID")
+if not GUILD_ID:
+    raise ValueError("💀 Ustaw GUILD_ID!")
+GUILD_ID = int(GUILD_ID)
 
 TARGET_URL = os.getenv("TARGET_URL")
 if not TARGET_URL:
-    raise ValueError("💀 Ustaw TARGET_URL w Railway Variables!")
+    raise ValueError("💀 Ustaw TARGET_URL!")
 
-# ========== NAGŁÓWKI ==========
-headers = {
-    "Authorization": TOKEN,
-    "Content-Type": "application/json"
-}
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+if not CHANNEL_ID:
+    raise ValueError("💀 Ustaw CHANNEL_ID!")
+CHANNEL_ID = int(CHANNEL_ID)
 
-# ========== FUNKCJA SNIPOWANIA ==========
-def snipe():
-    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/vanity-url"
-    data = {"code": TARGET_URL}
+YOUR_USER_ID = os.getenv("YOUR_USER_ID")
+if not YOUR_USER_ID:
+    raise ValueError("💀 Ustaw YOUR_USER_ID!")
+YOUR_USER_ID = int(YOUR_USER_ID)
+
+# ========== KONFIGURACJA BOTA ==========
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ========== SPRAWDZANIE VANITY ==========
+def check_vanity():
+    """Sprawdza czy vanity jest wolne (BEZ TOKENA!)"""
+    # Używamy PUBLICZNEGO API Discorda – nie wymaga tokena!
+    url = f"https://discord.com/api/v9/invites/{TARGET_URL}"
     
     try:
-        r = requests.patch(url, headers=headers, json=data)
+        r = requests.get(url)
         
-        # ===== SUKCES =====
-        if r.status_code == 200:
-            print(f"🔥🔥🔥 PRZECHWYCONE! Vanity: {TARGET_URL} 🔥🔥🔥")
-            return True
-        
-        # ===== BŁĘDY =====
-        elif r.status_code == 401:
-            print("💀 TOKEN NIEAKTUALNY! Wyciągnij nowy token z konta!")
-            print(f"   Odpowiedź: {r.text}")
-            return False
+        if r.status_code == 404:
+            # 404 = link nie istnieje = vanity jest WOLNE!
+            print(f"🔥 {TARGET_URL} JEST WOLNE!")
+            return True, None
             
-        elif r.status_code == 403:
-            print("❌ Brak uprawnień! Konto MK musi mieć rolę ADMIN na serwerze!")
-            print(f"   Odpowiedź: {r.text}")
-            return False
+        elif r.status_code == 200:
+            # 200 = link istnieje = jest zajęte
+            data = r.json()
+            guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
+            print(f"⏳ {TARGET_URL} jest ZAJĘTE przez: {guild_name}")
+            return False, guild_name
             
         elif r.status_code == 429:
             print("⏳ Rate limit! Czekam 60 sekund...")
             time.sleep(60)
-            return snipe()
+            return check_vanity()
             
         else:
             print(f"⚠️ Błąd {r.status_code}: {r.text}")
-            return False
+            return False, None
             
     except requests.exceptions.RequestException as e:
         print(f"💀 Błąd sieci: {e}")
-        return False
+        return False, None
     except Exception as e:
         print(f"💀 Nieznany błąd: {e}")
-        return False
+        return False, None
 
-# ========== FUNKCJA KEEP-ALIVE ==========
-def keep_alive():
-    """Odświeża sesję i przedłuża życie tokena"""
+# ========== POWIADOMIENIA ==========
+async def send_alert():
+    """Wysyła powiadomienie na DM i kanał"""
+    
+    # DM do ciebie
     try:
-        r = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
-        if r.status_code == 200:
-            print("✅ Sesja żyje i ma się dobrze!")
-            return True
-        elif r.status_code == 401:
-            print("💀 TOKEN WYGASŁ! Wyciągnij nowy!")
-            return False
-        else:
-            print(f"⚠️ Keep-alive: {r.status_code}")
-            return True
+        user = await bot.fetch_user(YOUR_USER_ID)
+        if user:
+            dm_channel = await user.create_dm()
+            await dm_channel.send(
+                f"🚨🚨🚨 **ALPHA! VANITY JEST WOLNE!** 🚨🚨🚨\n"
+                f"🎯 **Cel:** `{TARGET_URL}`\n"
+                f"🔗 **Link:** https://discord.gg/{TARGET_URL}\n"
+                f"⚡ **Ustaw to ręcznie w ustawieniach serwera!**"
+            )
+            print("✅ DM wysłane!")
     except Exception as e:
-        print(f"💀 Błąd keep-alive: {e}")
-        return False
+        print(f"💀 Błąd DM: {e}")
+    
+    # Wiadomość na kanale
+    try:
+        channel = bot.get_channel(CHANNEL_ID)
+        if channel:
+            await channel.send(
+                f"🚨🚨🚨 @everyone **VANITY JEST WOLNE!** 🚨🚨🚨\n"
+                f"🎯 **Cel:** `{TARGET_URL}`\n"
+                f"🔗 **Link:** https://discord.gg/{TARGET_URL}\n"
+                f"<@{YOUR_USER_ID}> **USTAW TO TERAZ!**"
+            )
+            print("✅ Wiadomość na kanale wysłana!")
+    except Exception as e:
+        print(f"💀 Błąd kanału: {e}")
 
 # ========== GŁÓWNA PĘTLA ==========
-print("🚀🚀🚀 ZO STARTUJE BEZ MFA DLA ALPHY! 🚀🚀🚀")
-print(f"🎯 Cel: {TARGET_URL} na serwerze {GUILD_ID}")
-print("=" * 60)
+async def monitor_loop():
+    await bot.wait_until_ready()
+    print("🔍 Rozpoczynam monitorowanie (BEZ TWOJEGO TOKENA!)...")
+    
+    while not bot.is_closed():
+        try:
+            is_free, guild_name = check_vanity()
+            
+            if is_free:
+                print(f"🔥🔥🔥 WOLNE! {TARGET_URL} JEST DOSTĘPNE! 🔥🔥🔥")
+                await send_alert()
+                # Po znalezieniu wolnego, czekamy dłużej (żeby nie spamować)
+                await asyncio.sleep(3600)  # 1 godzina
+            else:
+                if guild_name:
+                    print(f"⏳ Zajęte przez: {guild_name}")
+                await asyncio.sleep(60)  # Sprawdzaj co minutę
+                
+        except Exception as e:
+            print(f"💀 Błąd w pętli: {e}")
+            await asyncio.sleep(60)
 
-counter = 0
-while True:
-    counter += 1
-    print(f"\n🔄 Próba #{counter} - {time.strftime('%H:%M:%S')}")
+# ========== KOMENDY ==========
+@bot.command()
+async def vanity(ctx):
+    """Sprawdza aktualny vanity URL"""
+    is_free, guild_name = check_vanity()
     
-    keep_alive()
-    success = snipe()
-    
-    if success:
-        print("✅ Zrobione! Snajpowanie działa!")
+    if is_free:
+        await ctx.send(f"🔥🔥🔥 `{TARGET_URL}` JEST WOLNE! Ustaw to teraz!")
     else:
-        print("⏳ Nie udało się, czekam 5 minut...")
-    
-    time.sleep(300)
+        await ctx.send(f"⏳ `{TARGET_URL}` jest ZAJĘTE przez: {guild_name}")
+
+@bot.command()
+async def ping(ctx):
+    """Ping"""
+    await ctx.send("🏓 Pong!")
+
+# ========== URUCHOMIENIE ==========
+@bot.event
+async def on_ready():
+    print(f"✅ Zalogowano jako {bot.user}")
+    print(f"🎯 Monitorowanie: {TARGET_URL}")
+    print(f"📢 Kanał: {CHANNEL_ID}")
+    print(f"👤 Powiadomienia dla: {YOUR_USER_ID}")
+    print("=" * 50)
+    bot.loop.create_task(monitor_loop())
+
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        print("💀 BRAK BOT_TOKEN!")
+    else:
+        bot.run(BOT_TOKEN)
