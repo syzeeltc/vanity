@@ -4,10 +4,20 @@ import os
 import aiohttp
 
 # ========== ZMIENNE ŚRODOWISKOWE ==========
-TOKEN = os.getenv("DISCORD_TOKEN")          # Token z konta MK
-GUILD_ID = int(os.getenv("GUILD_ID"))       # ID twojego serwera
-TARGET_URL = os.getenv("TARGET_URL")        # Vanity URL do przechwycenia
-PROXY = os.getenv("PROXY")                  # Opcjonalne proxy (np. http://user:pass@ip:port)
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise ValueError("💀 Ustaw DISCORD_TOKEN w Railway Variables!")
+
+try:
+    GUILD_ID = int(os.getenv("GUILD_ID"))
+except (TypeError, ValueError):
+    raise ValueError("💀 Ustaw GUILD_ID (liczba) w Railway Variables!")
+
+TARGET_URL = os.getenv("TARGET_URL")
+if not TARGET_URL:
+    raise ValueError("💀 Ustaw TARGET_URL w Railway Variables!")
+
+PROXY = os.getenv("PROXY")  # Opcjonalne
 
 # ========== KONFIGURACJA CLIENTA ==========
 intents = discord.Intents.default()
@@ -64,7 +74,9 @@ async def on_message(message):
 
 # ========== URUCHOMIENIE ==========
 if __name__ == "__main__":
-    if not TOKEN:
-        print("💀 BRAK TOKENA! Ustaw DISCORD_TOKEN w Railway Variables!")
-    else:
-        client.run(TOKEN, bot=False)
+    try:
+        client.run(TOKEN)  # <-- BEZ bot=False!
+    except discord.LoginFailure:
+        print("💀 BŁĘDNY TOKEN! Sprawdź czy token jest z konta użytkownika (nie bota!)")
+    except Exception as e:
+        print(f"💀 Nieznany błąd: {e}")
