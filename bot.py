@@ -1,82 +1,54 @@
-import discord
-import asyncio
+import requests
 import os
-import aiohttp
+import time
 
-# ========== ZMIENNE ŚRODOWISKOWE ==========
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise ValueError("💀 Ustaw DISCORD_TOKEN w Railway Variables!")
+    raise ValueError("💀 Ustaw DISCORD_TOKEN!")
 
-try:
-    GUILD_ID = int(os.getenv("GUILD_ID"))
-except (TypeError, ValueError):
-    raise ValueError("💀 Ustaw GUILD_ID (liczba) w Railway Variables!")
+GUILD_ID = os.getenv("GUILD_ID")
+if not GUILD_ID:
+    raise ValueError("💀 Ustaw GUILD_ID!")
 
 TARGET_URL = os.getenv("TARGET_URL")
 if not TARGET_URL:
-    raise ValueError("💀 Ustaw TARGET_URL w Railway Variables!")
+    raise ValueError("💀 Ustaw TARGET_URL!")
 
-PROXY = os.getenv("PROXY")  # Opcjonalne
+headers = {
+    "Authorization": TOKEN,
+    "Content-Type": "application/json"
+}
 
-# ========== KONFIGURACJA CLIENTA ==========
-intents = discord.Intents.default()
-intents.message_content = True
-
-# Ustawiamy sesję z proxy (jeśli podane)
-connector = aiohttp.TCPConnector(proxy=PROXY) if PROXY else None
-client = discord.Client(intents=intents, connector=connector)
-
-# ========== FUNKCJA SNIPOWANIA ==========
-async def auto_snipe():
-    await client.wait_until_ready()
-    while not client.is_closed():
-        guild = client.get_guild(GUILD_ID)
-        if guild and guild.premium_tier >= 3:
-            try:
-                await guild.edit(vanity_code=TARGET_URL)
-                print(f"🔥 Znowu przechwycone! Vanity: {TARGET_URL}")
-            except discord.Forbidden:
-                print("❌ Brak uprawnień – sprawdź rolę konta MK!")
-            except discord.HTTPException as e:
-                print(f"⚠️ Błąd HTTP: {e}")
-            except Exception as e:
-                print(f"💀 Inny błąd: {e}")
-        else:
-            print("⏳ Za mały boost level albo brak serwera – czekam...")
-        await asyncio.sleep(300)  # 5 minut
-
-# ========== NASŁUCHIWANIE NA KOMENDY ==========
-@client.event
-async def on_ready():
-    print(f"✅ Zo wjebał się jako {client.user} 😈")
-    print(f"🎯 Cel: {TARGET_URL} na serwerze {GUILD_ID}")
-    # Odpalanie auto-snipe w tle
-    client.loop.create_task(auto_snipe())
-
-@client.event
-async def on_message(message):
-    if message.guild and message.guild.id == GUILD_ID:
-        # Trigger na komendę /vanity lub wzmiankę o vanity
-        if "vanity" in message.content.lower() or "/vanity" in message.content:
-            guild = message.guild
-            if guild.premium_tier >= 3:
-                try:
-                    await guild.edit(vanity_code=TARGET_URL)
-                    await message.channel.send(f"🚀 Vanity `{TARGET_URL}` przechwycone! Alpha rządzi!")
-                    print(f"🔥 Ręczne przechwycenie przez {message.author}")
-                except discord.Forbidden:
-                    await message.channel.send("❌ Brak uprawnień – daj admina kontekstowi MK!")
-                except discord.HTTPException as e:
-                    await message.channel.send(f"⚠️ Błąd: {e}")
-            else:
-                await message.channel.send("💀 Za mały boost level (potrzebny 3)!")
-
-# ========== URUCHOMIENIE ==========
-if __name__ == "__main__":
+def snipe():
+    url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/vanity-url"
+    data = {"code": TARGET_URL}
+    
     try:
-        client.run(TOKEN)  # <-- BEZ bot=False!
-    except discord.LoginFailure:
-        print("💀 BŁĘDNY TOKEN! Sprawdź czy token jest z konta użytkownika (nie bota!)")
-    except Exception as e:
-        print(f"💀 Nieznany błąd: {e}")
+        r = requests.patch(url, headers=headers, json=data)
+        
+        if r.status_code == 200:
+            print(f"🔥 Przechwycone! Vanity: {TARGET_URL}")
+            return True
+        elif r.status_code == 401:
+            print("💀 TOKEN NIEAKTUALNY! Wyciągnij nowy token z konta!")
+            print(f"   Odpowiedź: {r.text}")
+        elif r.status_code == 403:
+            print("❌ Brak uprawnień! Konto MK musi mieć rolę ADMIN na serwerze!")
+            print(f"   Odpowiedź: {r.text}")
+        elif r.status_code == 400:
+            print(f"⚠️ Błąd 400 – złe dane: {r.text}")
+        else:
+            print(f"⚠️ Błąd {r.status_code}: {r.text}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"💀 Błąd sieci: {e}")
+    
+    return False
+
+print("🚀 Zo startuje z requests (self-bot) dla Alphy!")
+print(f"🎯 Cel: {TARGET_URL} na serwerze {GUILD_ID}")
+
+while True:
+    snipe()
+    print("⏳ Czekam 5 minut...")
+    time.sleep(300)
