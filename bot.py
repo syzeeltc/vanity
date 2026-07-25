@@ -9,17 +9,22 @@ VANITY_CODES = [c.strip() for c in os.getenv("VANITY_CODES", "").split(",") if c
 GUILD_ID = int(os.getenv("GUILD_ID"))
 CHANNEL_ID = int(os.getenv("CHANNEL_ID")) if os.getenv("CHANNEL_ID") else None
 YOUR_ID = int(os.getenv("YOUR_ID"))
-CHECK_INTERVAL = 1  # co 1 minutę
-ALERT_COOLDOWN_MINUTES = 10  # po powiadomieniu czeka 10 min zanim znowu sprawdzi ten kod
+CHECK_INTERVAL = 1  # co 1 minutę sprawdza wszystkie
+ALERT_COOLDOWN_MINUTES = 30  # po alarmie czeka 30 min zanim znowu alarmuje ten kod
 
-class VanityMonitorBot(commands.Bot):
+class SmartVanityBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.session = None
-        self.notified = {}  # code -> datetime kiedy ostatnio powiadomiono
-        self.last_status = {}
+        # Historia: code -> {"status": "taken"|"free"|"unknown", "since": datetime, "last_alert": datetime|None}
+        self.history = {}
+        self.init_history()
+
+    def init_history(self):
+        for code in VANITY_CODES:
+            self.history[code] = {"status": "unknown", "since": datetime.utcnow(), "last_alert": None}
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
@@ -27,7 +32,7 @@ class VanityMonitorBot(commands.Bot):
 
     async def on_ready(self):
         print(f"Bot zalogowany jako {self.user}")
-        print(f"Monitoruje: {', '.join(VANITY_CODES)} co {CHECK_INTERVAL} min")
+        print(f"Smart Monitor aktywny dla: {', '.join(VANITY_CODES)}")
         guild = self.get_guild(GUILD_ID)
         if guild:
             print(f"Serwer: {guild.name} (boost tier: {guild.premium_tier})")
@@ -40,30 +45,26 @@ class VanityMonitorBot(commands.Bot):
                 owner = data.get("guild", {}).get("name", "???")
                 return "taken", owner
             elif resp.status == 404:
-                return "free_or_banned", None
+                return "free", None
             elif resp.status == 429:
                 return "ratelimit", None
             else:
                 return f"error_{resp.status}", None
 
-    async def send_alert(self, code: str, user: discord.User, channel=None):
+    async def send_alert(self, code: str, prev_owner: str, user: discord.User, channel):
         embed = discord.Embed(
             title="Vanity URL Monitor",
-            description=f"Kod `discord.gg/{code}` zwrócił **404**.",
-            color=0xFFA500,
+            description=f"Kod `discord.gg/{code}` **WŁAŚNIE SIĘ ZWOLNIŁ**!",
+            color=0x00FF00,
             timestamp=datetime.utcnow()
         )
-        embed.add_field(
-            name="Status",
-            value="Może być wolny LUB w cooldown/zbanowany przez Discorda.",
-            inline=False
-        )
+        embed.add_field(name="Poprzedni właściciel", value=prev_owner or "Nieznany", inline=False)
         embed.add_field(
             name="Co zrobić?",
-            value="Wejdź w Ustawienia serwera → Zaproszenia → Custom Link i sprawdź czy da się ustawić.",
+            value="Wejdź w **Ustawienia serwera → Zaproszenia → Custom Link** i ustaw go NATYCHMIAST!",
             inline=False
         )
-        embed.set_footer(text="Sprawdź natychmiast! Inni też mogą mieć snajpery.")
+        embed.set_footer(text="To jest PRAWDZIWE zwolnienie (kod był zajęty, teraz jest wolny). Szybko!")
 
         dm_sent = False
         try:
@@ -75,10 +76,10 @@ class VanityMonitorBot(commands.Bot):
 
         if channel:
             try:
+                msg = f"<@{YOUR_ID}> 🚨 **Vanity `discord.gg/{code}` WŁAŚNIE SIĘ ZWOLNIŁ!**"
                 if dm_sent:
-                    await channel.send(f"<@{YOUR_ID}> Wysłano DM o vanity `discord.gg/{code}` — sprawdź wiadomości prywatne!")
-                else:
-                    await channel.send(f"<@{YOUR_ID}> Vanity `discord.gg/{code}` może być wolny! Sprawdź ASAP!", embed=embed)
+                    msg += " (DM wysłane)"
+                await channel.send(msg, embed=embed)
             except Exception as e:
                 print(f"Blad wysylania na kanal: {e}")
 
@@ -91,23 +92,49 @@ class VanityMonitorBot(commands.Bot):
         now = datetime.utcnow()
 
         for code in VANITY_CODES:
-            # Sprawdź cooldown
-            if code in self.notified:
-                time_since = now - self.notified[code]
-                if time_since < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
-                    remaining = ALERT_COOLDOWN_MINUTES - time_since.seconds // 60
-                    print(f"{code} w cooldownie powiadomienia ({remaining} min zostalo)")
+            hist = self.history[code]
+            status, info = await self.check_vanity(code)
+
+            # Sprawdź cooldown alarmu
+            if hist["last_alert"]:
+                time_since_alert = now - hist["last_alert"]
+                if time_since_alert < timedelta(minutes=ALERT_COOLDOWN_MINUTES):
+                    # W cooldownzie — aktualizuj status ale nie alarmuj
+                    hist["status"] = status
+                    hist["since"] = now
+                    print(f"{code}: {status} (w cooldownie alarmu)")
                     continue
 
-            status, info = await self.check_vanity(code)
-            self.last_status[code] = (status, info, now)
-
             if status == "taken":
-                print(f"{code} zajety przez: {info}")
-            elif status == "free_or_banned":
-                print(f"{code} 404 - wysylam powiadomienie")
-                await self.send_alert(code, user, channel)
-                self.notified[code] = now
+                # Kod zajęty — aktualizuj historię
+                if hist["status"] != "taken":
+                    print(f"{code}: teraz zajety przez {info}")
+                else:
+                    print(f"{code}: nadal zajety przez {info}")
+                hist["status"] = "taken"
+                hist["since"] = now
+                hist["owner"] = info
+
+            elif status == "free":
+                # Kod zwraca 404
+                if hist["status"] == "taken":
+                    # BYŁ ZAJĘTY, TERAZ WOLNY -> ALARM!
+                    prev_owner = hist.get("owner", "Nieznany")
+                    print(f"🚨 {code}: ZWOLNIONY! (był: {prev_owner})")
+                    await self.send_alert(code, prev_owner, user, channel)
+                    hist["last_alert"] = now
+                    hist["status"] = "free"
+                    hist["since"] = now
+                elif hist["status"] == "unknown":
+                    # Pierwszy check i od razu 404 — może być zbanowany, nie alarmujemy
+                    print(f"{code}: 404 od startu (zbanowany/cooldown?) — ciche monitorowanie")
+                    hist["status"] = "free"
+                    hist["since"] = now
+                else:
+                    # Nadal 404 — ciche logowanie
+                    print(f"{code}: nadal 404 (zbanowany/cooldown)")
+                    hist["since"] = now
+
             elif status == "ratelimit":
                 print(f"Rate limit na {code}")
             else:
@@ -126,12 +153,15 @@ class VanityMonitorBot(commands.Bot):
             code = VANITY_CODES[0]
 
         status, info = await self.check_vanity(code)
-        self.last_status[code] = (status, info, datetime.utcnow())
+        hist = self.history.get(code, {})
 
         if status == "taken":
             await ctx.send(f"❌ `discord.gg/{code}` jest zajęty przez: **{info}**")
-        elif status == "free_or_banned":
-            await ctx.send(f"⚠️ `discord.gg/{code}` zwraca **404**. Może być wolny lub w cooldown. Sprawdź w ustawieniach serwera!")
+        elif status == "free":
+            if hist.get("status") == "taken":
+                await ctx.send(f"🚨 `discord.gg/{code}` **WŁAŚNIE SIĘ ZWOLNIŁ**! Sprawdź w ustawieniach serwera!")
+            else:
+                await ctx.send(f"⚠️ `discord.gg/{code}` zwraca 404. Może być wolny LUB zbanowany/cooldown.")
         elif status == "ratelimit":
             await ctx.send(f"⏳ Rate limit — spróbuj później.")
         else:
@@ -139,34 +169,40 @@ class VanityMonitorBot(commands.Bot):
 
     @commands.command()
     async def status(self, ctx):
-        if not self.last_status:
-            await ctx.send("Jeszcze nic nie sprawdzono. Poczekaj na pierwszy cykl lub użyj `!check kod`")
-            return
-
-        embed = discord.Embed(title="Status Vanity URL", color=0x3498db)
-        for code, (status, info, checked_at) in self.last_status.items():
+        embed = discord.Embed(title="Smart Vanity Monitor", color=0x3498db)
+        for code, hist in self.history.items():
+            status = hist["status"]
+            since = hist["since"].strftime("%H:%M:%S")
             if status == "taken":
-                val = f"❌ Zajęty przez: {info}"
-            elif status == "free_or_banned":
-                val = f"⚠️ 404 (wolny/cooldown)"
+                owner = hist.get("owner", "???")
+                val = f"❌ Zajęty przez: {owner}\n🕒 od {since}"
+            elif status == "free":
+                if hist.get("last_alert"):
+                    val = f"⚠️ 404 — alarm wysłano {hist['last_alert'].strftime('%H:%M:%S')}"
+                else:
+                    val = f"🔇 404 od startu (zbanowany/cooldown?)\n🕒 od {since}"
             else:
-                val = f"❓ {status}"
-            embed.add_field(name=f"discord.gg/{code}", value=f"{val}\n🕒 {checked_at.strftime('%H:%M:%S')}", inline=False)
+                val = f"❓ Nieznany\n🕒 od {since}"
+            embed.add_field(name=f"discord.gg/{code}", value=val, inline=False)
         await ctx.send(embed=embed)
 
     @commands.command()
     async def reset(self, ctx, code: str = None):
         if code:
-            self.notified.pop(code, None)
-            await ctx.send(f"Resetowano powiadomienie dla `{code}`. Bot będzie ponownie monitorował.")
+            if code in self.history:
+                self.history[code]["last_alert"] = None
+                await ctx.send(f"Resetowano alarm dla `{code}`.")
+            else:
+                await ctx.send(f"Nie znam kodu `{code}`.")
         else:
-            self.notified.clear()
-            await ctx.send("Resetowano wszystkie powiadomienia.")
+            for c in self.history:
+                self.history[c]["last_alert"] = None
+            await ctx.send("Resetowano wszystkie alarmy.")
 
     async def close(self):
         if self.session:
             await self.session.close()
         await super().close()
 
-bot = VanityMonitorBot()
+bot = SmartVanityBot()
 bot.run(TOKEN)
