@@ -36,7 +36,6 @@ TARGET_URLS = [
 ]
 
 # ========== PAMIĘĆ STATUSÓW ==========
-# Przechowuje poprzedni status każdej vanity
 last_known_status = {}
 
 # ========== KONFIGURACJA BOTA ==========
@@ -52,32 +51,26 @@ def check_single_vanity(vanity_name):
     try:
         r = requests.get(url)
         
-        # ===== 200 =====
         if r.status_code == 200:
             data = r.json()
             guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
             guild_id = data.get("guild", {}).get("id")
             
-            # Sprawdź czy to nasz serwer
             if guild_id and int(guild_id) == GUILD_ID:
                 return "OWN_SERVER", guild_name
             else:
                 return "TAKEN", guild_name
         
-        # ===== 404 =====
         elif r.status_code == 404:
             try:
                 error_data = r.json()
                 error_msg = error_data.get("message", "").lower()
                 
-                # Komunikaty o banie
                 banned_keywords = ["invalid", "banned", "suspended", "restricted", "vanity", "not found"]
                 
                 if any(keyword in error_msg for keyword in banned_keywords):
-                    # Sprawdź czy wcześniej była zajęta
                     previous = last_known_status.get(vanity_name)
                     
-                    # Jeśli wcześniej była zajęta (np. przez nasz serwer) i teraz jest 404 -> jest WOLNA
                     if previous and previous.get("status") in ["TAKEN", "OWN_SERVER"]:
                         print(f"🔥 {vanity_name} ZOSTAŁA ZWOLNIONA!")
                         return "FREE", None
@@ -88,17 +81,14 @@ def check_single_vanity(vanity_name):
             except:
                 return "FREE", None
         
-        # ===== 429 =====
         elif r.status_code == 429:
             print(f"⏳ Rate limit dla {vanity_name}, czekam 60s...")
             time.sleep(60)
             return check_single_vanity(vanity_name)
         
-        # ===== 403 =====
         elif r.status_code == 403:
             return "BANNED", None
         
-        # ===== INNE =====
         else:
             return "UNKNOWN", None
             
@@ -106,21 +96,17 @@ def check_single_vanity(vanity_name):
         print(f"💀 Błąd sprawdzania {vanity_name}: {e}")
         return "UNKNOWN", None
 
-# ========== SPRAWDZANIE WSZYSTKICH ==========
 def check_all_vanities():
     results = {}
     for vanity in TARGET_URLS:
         status, guild_name = check_single_vanity(vanity)
         results[vanity] = {"status": status, "guild_name": guild_name}
-        
-        # Zapamiętaj status
         last_known_status[vanity] = {"status": status, "guild_name": guild_name}
-        
         print(f"📊 {vanity}: {status}" + (f" ({guild_name})" if guild_name else ""))
     return results
 
 # ========== POWIADOMIENIA ==========
-async def send_vanity_alert(vanity_name, status, guild_name=None):
+async def send_vanity_alert(vanity_name, status):
     if status == "FREE":
         title = "🚨🚨🚨 WOLNE!"
         emoji = "🔥"
@@ -136,7 +122,6 @@ async def send_vanity_alert(vanity_name, status, guild_name=None):
     else:
         return
     
-    # DM
     try:
         user = await bot.fetch_user(YOUR_USER_ID)
         if user:
@@ -146,7 +131,6 @@ async def send_vanity_alert(vanity_name, status, guild_name=None):
     except Exception as e:
         print(f"💀 Błąd DM ({vanity_name}): {e}")
     
-    # Kanał
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel:
@@ -157,6 +141,25 @@ async def send_vanity_alert(vanity_name, status, guild_name=None):
 
 # ========== SLASH COMMANDS ==========
 
+# 0. SYNC – RĘCZNA REJESTRACJA KOMEND
+@tree.command(name="sync", description="SYNC - rejestruje wszystkie slash commands (tylko Alpha)")
+async def sync(interaction: discord.Interaction):
+    if interaction.user.id != YOUR_USER_ID:
+        await interaction.response.send_message("❌ Tylko Alpha może to robić!", ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Sync globalny
+        await tree.sync()
+        await interaction.followup.send("✅ **ZSYNCHRONIZOWANO WSZYSTKIE KOMENDY!**\nUżyj `/` żeby je zobaczyć.", ephemeral=True)
+        print("✅ Slash commands zsynchronicowane!")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Błąd synchronizacji: {e}", ephemeral=True)
+        print(f"💀 Błąd sync: {e}")
+
+# 1. Sprawdź wszystkie vanity
 @tree.command(name="vanity", description="Sprawdza status wszystkich monitorowanych vanitek")
 async def vanity(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -180,6 +183,7 @@ async def vanity(interaction: discord.Interaction):
     
     await interaction.followup.send(message)
 
+# 2. Sprawdź konkretną vanity
 @tree.command(name="check", description="Sprawdza status konkretnej vanity")
 @app_commands.describe(vanity_name="Nazwa vanity do sprawdzenia")
 async def check(interaction: discord.Interaction, vanity_name: str):
@@ -198,6 +202,7 @@ async def check(interaction: discord.Interaction, vanity_name: str):
     else:
         await interaction.followup.send(f"⚠️ Nieznany status: {status}")
 
+# 3. Dodaj vanity do listy
 @tree.command(name="add", description="Dodaje vanity do monitorowania (tylko Alpha)")
 @app_commands.describe(vanity_name="Nazwa vanity do dodania")
 async def add(interaction: discord.Interaction, vanity_name: str):
@@ -211,6 +216,7 @@ async def add(interaction: discord.Interaction, vanity_name: str):
         TARGET_URLS.append(vanity_name)
         await interaction.response.send_message(f"✅ Dodano `{vanity_name}` do monitorowania!")
 
+# 4. Usuń vanity z listy
 @tree.command(name="remove", description="Usuwa vanity z monitorowania (tylko Alpha)")
 @app_commands.describe(vanity_name="Nazwa vanity do usunięcia")
 async def remove(interaction: discord.Interaction, vanity_name: str):
@@ -224,6 +230,7 @@ async def remove(interaction: discord.Interaction, vanity_name: str):
         TARGET_URLS.remove(vanity_name)
         await interaction.response.send_message(f"✅ Usunięto `{vanity_name}` z monitorowania!")
 
+# 5. Pokaż listę monitorowanych vanitek
 @tree.command(name="list", description="Pokazuje wszystkie monitorowane vanitki")
 async def list_vanity(interaction: discord.Interaction):
     if interaction.user.id != YOUR_USER_ID:
@@ -240,6 +247,7 @@ async def list_vanity(interaction: discord.Interaction):
     
     await interaction.response.send_message(message)
 
+# 6. Ping
 @tree.command(name="ping", description="Sprawdza czy bot żyje")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
@@ -259,11 +267,10 @@ async def monitor_loop():
             for vanity_name, data in results.items():
                 status = data["status"]
                 
-                # Jeśli jest WOLNA lub ZBANOWANA – powiadom
                 if status in ["FREE", "BANNED"]:
                     await send_vanity_alert(vanity_name, status)
             
-            await asyncio.sleep(30)  # Sprawdzaj co 30 sekund (szybciej)
+            await asyncio.sleep(30)
                 
         except Exception as e:
             print(f"💀 Błąd w pętli: {e}")
@@ -272,7 +279,6 @@ async def monitor_loop():
 # ========== SYNC SLASH COMMANDS ==========
 @bot.event
 async def on_ready():
-    await tree.sync()
     print(f"✅ Zalogowano jako {bot.user}")
     print(f"📋 Monitorowane vanitki ({len(TARGET_URLS)}):")
     for v in TARGET_URLS:
@@ -280,6 +286,15 @@ async def on_ready():
     print(f"📢 Kanał: {CHANNEL_ID}")
     print(f"👤 Powiadomienia dla: {YOUR_USER_ID}")
     print("=" * 50)
+    
+    # SYNC przy starcie
+    try:
+        await tree.sync()
+        print("✅ Slash commands zarejestrowane!")
+    except Exception as e:
+        print(f"⚠️ Błąd sync przy starcie: {e}")
+        print("Użyj /sync po starcie bota!")
+    
     bot.loop.create_task(monitor_loop())
 
 # ========== URUCHOMIENIE ==========
