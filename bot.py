@@ -31,6 +31,8 @@ headers = {
 # ========== FUNKCJA WYSYŁANIA MFA ==========
 def send_mfa(ticket):
     """Wysyła kod MFA do Discorda i zwraca nowy token"""
+    global TOKEN, headers
+    
     mfa_url = "https://discord.com/api/v9/mfa/finish"
     mfa_data = {
         "code": MFA_CODE,
@@ -45,6 +47,8 @@ def send_mfa(ticket):
             new_token = mfa_resp.get("token")
             if new_token:
                 print(f"✅ Nowy token wyciągnięty! {new_token[:20]}...")
+                TOKEN = new_token
+                headers["Authorization"] = new_token
                 return new_token
             else:
                 print(f"❌ Brak tokena w odpowiedzi MFA: {mfa_r.text}")
@@ -97,8 +101,6 @@ def snipe():
                 new_token = send_mfa(ticket)
                 
                 if new_token:
-                    TOKEN = new_token
-                    headers["Authorization"] = new_token
                     print("🔄 Próbuję jeszcze raz z nowym tokenem...")
                     return snipe()  # Rekurencyjna próba
                 else:
@@ -135,6 +137,9 @@ def snipe():
 
 # ========== FUNKCJA KEEP-ALIVE ==========
 def keep_alive():
+    """Odświeża sesję i przedłuża życie tokena"""
+    global TOKEN, headers
+    
     try:
         r = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
         if r.status_code == 200:
@@ -149,9 +154,6 @@ def keep_alive():
                 if ticket and MFA_CODE != "000000":
                     new_token = send_mfa(ticket)
                     if new_token:
-                        global TOKEN, headers
-                        TOKEN = new_token
-                        headers["Authorization"] = new_token
                         print("✅ Token odświeżony!")
                         return True
             except:
