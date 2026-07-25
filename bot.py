@@ -41,7 +41,6 @@ BLACKLIST = [
 
 # ========== PAMIĘĆ STATUSÓW ==========
 last_known_status = {}
-already_notified = {}  # <---- NOWA FLAGA!
 
 # ========== KONFIGURACJA BOTA ==========
 intents = discord.Intents.default()
@@ -241,14 +240,14 @@ async def ping_cmd(ctx):
 
 @bot.command(name="reset")
 async def reset_cmd(ctx):
-    """Resetuje flagi powiadomień (tylko Alpha)"""
+    """Resetuje pamięć statusów (tylko Alpha)"""
     if ctx.author.id != YOUR_USER_ID:
         await ctx.send("❌ Tylko Alpha może to robić!")
         return
     
-    global already_notified
-    already_notified = {}
-    await ctx.send("✅ Zresetowano flagi powiadomień!")
+    global last_known_status
+    last_known_status = {}
+    await ctx.send("✅ Zresetowano pamięć statusów!")
 
 # ========== GŁÓWNA PĘTLA MONITOROWANIA ==========
 async def monitor_loop():
@@ -267,25 +266,21 @@ async def monitor_loop():
             
             for vanity_name, data in results.items():
                 status = data["status"]
-                previous = last_known_status.get(vanity_name, {}).get("status")
-                was_notified = already_notified.get(vanity_name, False)
+                previous_status = last_known_status.get(vanity_name, {}).get("status")
                 
-                # Jeśli vanity jest na czarnej liście – pomiń
+                # Pomijamy czarną listę
                 if vanity_name in BLACKLIST:
                     continue
                 
-                # Jeśli status zmienił się na FREE i NIE BYŁO POWIADOMIENIA
-                if status == "FREE" and not was_notified:
-                    print(f"🔥🔥🔥 {vanity_name} JEST WOLNE! WYSYŁAM POWIADOMIENIE!")
+                # ===== SNIPER LOGIKA =====
+                # PINGUJ TYLKO GDY:
+                # 1. Status to FREE
+                # 2. Poprzedni status to TAKEN lub OWN_SERVER (czyli ZOSTAŁA ZWOLNIONA)
+                if status == "FREE" and previous_status in ["TAKEN", "OWN_SERVER"]:
+                    print(f"🔥🔥🔥 {vanity_name} ZOSTAŁA ZWOLNIONA! ({previous_status} -> FREE)")
                     await send_vanity_alert(vanity_name)
-                    already_notified[vanity_name] = True  # <--- ZAPAMIĘTUJEMY ŻE WYSŁALIŚMY
                 
-                # Jeśli status przestał być FREE (zajęte, własny serwer) – resetujemy flagę
-                elif status in ["TAKEN", "OWN_SERVER", "BANNED"] and was_notified:
-                    print(f"🔄 {vanity_name} zmieniła status na {status} – resetuję flagę powiadomienia")
-                    already_notified[vanity_name] = False
-                
-                # Aktualizuj pamięć statusów
+                # Aktualizuj pamięć
                 last_known_status[vanity_name] = {"status": status, "guild_name": data.get("guild_name")}
             
             await asyncio.sleep(30)
