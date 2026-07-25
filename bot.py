@@ -28,9 +28,43 @@ headers = {
     "Content-Type": "application/json"
 }
 
+# ========== FUNKCJA WYSYŁANIA MFA ==========
+def send_mfa(ticket):
+    """Wysyła kod MFA do Discorda i zwraca nowy token"""
+    mfa_url = "https://discord.com/api/v9/mfa/finish"
+    mfa_data = {
+        "code": MFA_CODE,
+        "ticket": ticket
+    }
+    
+    try:
+        mfa_r = requests.post(mfa_url, headers=headers, json=mfa_data)
+        
+        if mfa_r.status_code == 200:
+            mfa_resp = mfa_r.json()
+            new_token = mfa_resp.get("token")
+            if new_token:
+                print(f"✅ Nowy token wyciągnięty! {new_token[:20]}...")
+                return new_token
+            else:
+                print(f"❌ Brak tokena w odpowiedzi MFA: {mfa_r.text}")
+                return None
+        elif mfa_r.status_code == 400:
+            print("❌ ZŁY KOD MFA! Zaktualizuj zmienną MFA_CODE na Railway!")
+            print("   (kod z autentykatora zmienia się co 30s, weź aktualny!)")
+            print(f"   Odpowiedź: {mfa_r.text}")
+            return None
+        else:
+            print(f"⚠️ Błąd MFA: {mfa_r.status_code}")
+            print(f"   Odpowiedź: {mfa_r.text}")
+            return None
+    except Exception as e:
+        print(f"💀 Błąd w MFA: {e}")
+        return None
+
 # ========== FUNKCJA SNIPOWANIA ==========
 def snipe():
-    global TOKEN, headers  # <-- TO MUSI BYĆ NA POCZĄTKU FUNKCJI!
+    global TOKEN, headers
     
     url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/vanity-url"
     data = {"code": TARGET_URL}
@@ -43,8 +77,8 @@ def snipe():
             print(f"🔥🔥🔥 PRZECHWYCONE! Vanity: {TARGET_URL} 🔥🔥🔥")
             return True
         
-        # ===== MFA WYMAGANE =====
-        elif r.status_code == 400 and "mfa" in r.text:
+        # ===== MFA WYMAGANE (status 400 LUB 401) =====
+        elif r.status_code in [400, 401] and "mfa" in r.text:
             print("💀 Wymagane MFA! Próbuję użyć kodu ze środowiska...")
             
             if MFA_CODE == "000000":
@@ -60,37 +94,14 @@ def snipe():
                     print("❌ Brak ticketu MFA w odpowiedzi")
                     return False
                 
-                mfa_url = "https://discord.com/api/v9/mfa/finish"
-                mfa_data = {
-                    "code": MFA_CODE,
-                    "ticket": ticket
-                }
+                new_token = send_mfa(ticket)
                 
-                mfa_r = requests.post(mfa_url, headers=headers, json=mfa_data)
-                
-                if mfa_r.status_code == 200:
-                    mfa_resp = mfa_r.json()
-                    new_token = mfa_resp.get("token")
-                    
-                    if new_token:
-                        print(f"✅ Nowy token wyciągnięty! {new_token[:20]}...")
-                        TOKEN = new_token
-                        headers["Authorization"] = new_token
-                        print("🔄 Próbuję jeszcze raz z nowym tokenem...")
-                        return snipe()
-                    else:
-                        print("❌ Nie otrzymano nowego tokena po MFA")
-                        print(f"   Odpowiedź: {mfa_r.text}")
-                        return False
-                        
-                elif mfa_r.status_code == 400:
-                    print("❌ ZŁY KOD MFA! Zaktualizuj zmienną MFA_CODE na Railway!")
-                    print("   (kod z autentykatora zmienia się co 30s, weź aktualny!)")
-                    print(f"   Odpowiedź: {mfa_r.text}")
-                    return False
+                if new_token:
+                    TOKEN = new_token
+                    headers["Authorization"] = new_token
+                    print("🔄 Próbuję jeszcze raz z nowym tokenem...")
+                    return snipe()  # Rekurencyjna próba
                 else:
-                    print(f"⚠️ Błąd MFA: {mfa_r.status_code}")
-                    print(f"   Odpowiedź: {mfa_r.text}")
                     return False
                     
             except json.JSONDecodeError:
@@ -101,11 +112,6 @@ def snipe():
                 return False
         
         # ===== INNE BŁĘDY =====
-        elif r.status_code == 401:
-            print("💀 TOKEN NIEAKTUALNY! Wyciągnij nowy token z konta!")
-            print(f"   Odpowiedź: {r.text}")
-            return False
-            
         elif r.status_code == 403:
             print("❌ Brak uprawnień! Konto MK musi mieć rolę ADMIN na serwerze!")
             print(f"   Odpowiedź: {r.text}")
@@ -135,7 +141,21 @@ def keep_alive():
             print("✅ Sesja żyje i ma się dobrze!")
             return True
         elif r.status_code == 401:
-            print("💀 TOKEN WYGASŁ! Potrzebny nowy!")
+            print("💀 TOKEN WYGASŁ! Próbuję odświeżyć...")
+            # Spróbujmy wyciągnąć ticket MFA
+            try:
+                resp = r.json()
+                ticket = resp.get("mfa", {}).get("ticket")
+                if ticket and MFA_CODE != "000000":
+                    new_token = send_mfa(ticket)
+                    if new_token:
+                        global TOKEN, headers
+                        TOKEN = new_token
+                        headers["Authorization"] = new_token
+                        print("✅ Token odświeżony!")
+                        return True
+            except:
+                pass
             return False
         else:
             print(f"⚠️ Keep-alive: {r.status_code}")
