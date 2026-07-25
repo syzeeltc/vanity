@@ -139,29 +139,120 @@ async def send_vanity_alert(vanity_name, status):
     except Exception as e:
         print(f"💀 Błąd kanału ({vanity_name}): {e}")
 
+# ========== NORMALNE KOMENDY (!) ==========
+@bot.command(name="sync")
+async def sync_command(ctx):
+    """Ręczna synchronizacja slash commands"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha!", delete_after=5)
+        return
+    
+    await ctx.send("🔄 Synchronizuję slash commands...")
+    
+    try:
+        await tree.sync()
+        await ctx.send("✅ **ZSYNCHRONIZOWANO!** Użyj `/` żeby zobaczyć komendy.")
+        print("✅ Slash commands zsynchronicowane przez !sync")
+    except Exception as e:
+        await ctx.send(f"❌ Błąd: {e}")
+        print(f"💀 Błąd !sync: {e}")
+
+@bot.command(name="vanity")
+async def vanity_command(ctx):
+    """Sprawdza wszystkie vanitki (komenda tekstowa)"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha!", delete_after=5)
+        return
+    
+    await ctx.send("📊 Sprawdzam...")
+    
+    results = check_all_vanities()
+    message = "📊 **STATUS VANITEK:**\n"
+    
+    for vanity_name, data in results.items():
+        status = data["status"]
+        if status == "FREE":
+            emoji = "🔥"
+        elif status == "BANNED":
+            emoji = "🚫"
+        elif status == "TAKEN":
+            emoji = "⏳"
+        elif status == "OWN_SERVER":
+            emoji = "✅"
+        else:
+            emoji = "⚠️"
+        message += f"{emoji} `{vanity_name}`: {status}\n"
+    
+    await ctx.send(message)
+
+@bot.command(name="add")
+async def add_command(ctx, vanity_name: str):
+    """Dodaje vanity do listy"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha!", delete_after=5)
+        return
+    
+    if vanity_name in TARGET_URLS:
+        await ctx.send(f"⚠️ `{vanity_name}` już jest na liście!")
+    else:
+        TARGET_URLS.append(vanity_name)
+        await ctx.send(f"✅ Dodano `{vanity_name}` do monitorowania!")
+
+@bot.command(name="remove")
+async def remove_command(ctx, vanity_name: str):
+    """Usuwa vanity z listy"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha!", delete_after=5)
+        return
+    
+    if vanity_name not in TARGET_URLS:
+        await ctx.send(f"⚠️ `{vanity_name}` nie ma na liście!")
+    else:
+        TARGET_URLS.remove(vanity_name)
+        await ctx.send(f"✅ Usunięto `{vanity_name}` z monitorowania!")
+
+@bot.command(name="list")
+async def list_command(ctx):
+    """Pokazuje listę monitorowanych vanitek"""
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.send("❌ Tylko Alpha!", delete_after=5)
+        return
+    
+    if not TARGET_URLS:
+        await ctx.send("📋 Lista jest pusta!")
+        return
+    
+    message = "📋 **MONITOROWANE VANITKI:**\n"
+    for i, vanity_name in enumerate(TARGET_URLS, 1):
+        message += f"{i}. `{vanity_name}`\n"
+    
+    await ctx.send(message)
+
+@bot.command(name="ping")
+async def ping_command(ctx):
+    """Ping"""
+    await ctx.send(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
+
 # ========== SLASH COMMANDS ==========
 
-# 0. SYNC – RĘCZNA REJESTRACJA KOMEND
 @tree.command(name="sync", description="SYNC - rejestruje wszystkie slash commands (tylko Alpha)")
-async def sync(interaction: discord.Interaction):
+async def sync_slash(interaction: discord.Interaction):
     if interaction.user.id != YOUR_USER_ID:
-        await interaction.response.send_message("❌ Tylko Alpha może to robić!", ephemeral=True)
+        await interaction.response.send_message("❌ Tylko Alpha!", ephemeral=True)
         return
     
     await interaction.response.defer(ephemeral=True)
     
     try:
-        # Sync globalny
         await tree.sync()
-        await interaction.followup.send("✅ **ZSYNCHRONIZOWANO WSZYSTKIE KOMENDY!**\nUżyj `/` żeby je zobaczyć.", ephemeral=True)
-        print("✅ Slash commands zsynchronicowane!")
+        await interaction.followup.send("✅ **ZSYNCHRONIZOWANO!** Użyj `/` żeby zobaczyć komendy.", ephemeral=True)
+        print("✅ Slash commands zsynchronicowane przez /sync")
     except Exception as e:
-        await interaction.followup.send(f"❌ Błąd synchronizacji: {e}", ephemeral=True)
-        print(f"💀 Błąd sync: {e}")
+        await interaction.followup.send(f"❌ Błąd: {e}", ephemeral=True)
+        print(f"💀 Błąd /sync: {e}")
 
-# 1. Sprawdź wszystkie vanity
 @tree.command(name="vanity", description="Sprawdza status wszystkich monitorowanych vanitek")
-async def vanity(interaction: discord.Interaction):
+async def vanity_slash(interaction: discord.Interaction):
     await interaction.response.defer()
     
     results = check_all_vanities()
@@ -183,10 +274,9 @@ async def vanity(interaction: discord.Interaction):
     
     await interaction.followup.send(message)
 
-# 2. Sprawdź konkretną vanity
 @tree.command(name="check", description="Sprawdza status konkretnej vanity")
 @app_commands.describe(vanity_name="Nazwa vanity do sprawdzenia")
-async def check(interaction: discord.Interaction, vanity_name: str):
+async def check_slash(interaction: discord.Interaction, vanity_name: str):
     await interaction.response.defer()
     
     status, guild_name = check_single_vanity(vanity_name)
@@ -202,12 +292,11 @@ async def check(interaction: discord.Interaction, vanity_name: str):
     else:
         await interaction.followup.send(f"⚠️ Nieznany status: {status}")
 
-# 3. Dodaj vanity do listy
 @tree.command(name="add", description="Dodaje vanity do monitorowania (tylko Alpha)")
 @app_commands.describe(vanity_name="Nazwa vanity do dodania")
-async def add(interaction: discord.Interaction, vanity_name: str):
+async def add_slash(interaction: discord.Interaction, vanity_name: str):
     if interaction.user.id != YOUR_USER_ID:
-        await interaction.response.send_message("❌ Tylko Alpha może to robić!", ephemeral=True)
+        await interaction.response.send_message("❌ Tylko Alpha!", ephemeral=True)
         return
     
     if vanity_name in TARGET_URLS:
@@ -216,12 +305,11 @@ async def add(interaction: discord.Interaction, vanity_name: str):
         TARGET_URLS.append(vanity_name)
         await interaction.response.send_message(f"✅ Dodano `{vanity_name}` do monitorowania!")
 
-# 4. Usuń vanity z listy
 @tree.command(name="remove", description="Usuwa vanity z monitorowania (tylko Alpha)")
 @app_commands.describe(vanity_name="Nazwa vanity do usunięcia")
-async def remove(interaction: discord.Interaction, vanity_name: str):
+async def remove_slash(interaction: discord.Interaction, vanity_name: str):
     if interaction.user.id != YOUR_USER_ID:
-        await interaction.response.send_message("❌ Tylko Alpha może to robić!", ephemeral=True)
+        await interaction.response.send_message("❌ Tylko Alpha!", ephemeral=True)
         return
     
     if vanity_name not in TARGET_URLS:
@@ -230,11 +318,10 @@ async def remove(interaction: discord.Interaction, vanity_name: str):
         TARGET_URLS.remove(vanity_name)
         await interaction.response.send_message(f"✅ Usunięto `{vanity_name}` z monitorowania!")
 
-# 5. Pokaż listę monitorowanych vanitek
 @tree.command(name="list", description="Pokazuje wszystkie monitorowane vanitki")
-async def list_vanity(interaction: discord.Interaction):
+async def list_slash(interaction: discord.Interaction):
     if interaction.user.id != YOUR_USER_ID:
-        await interaction.response.send_message("❌ Tylko Alpha może to robić!", ephemeral=True)
+        await interaction.response.send_message("❌ Tylko Alpha!", ephemeral=True)
         return
     
     if not TARGET_URLS:
@@ -247,9 +334,8 @@ async def list_vanity(interaction: discord.Interaction):
     
     await interaction.response.send_message(message)
 
-# 6. Ping
 @tree.command(name="ping", description="Sprawdza czy bot żyje")
-async def ping(interaction: discord.Interaction):
+async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
 
 # ========== GŁÓWNA PĘTLA MONITOROWANIA ==========
@@ -276,7 +362,7 @@ async def monitor_loop():
             print(f"💀 Błąd w pętli: {e}")
             await asyncio.sleep(60)
 
-# ========== SYNC SLASH COMMANDS ==========
+# ========== START ==========
 @bot.event
 async def on_ready():
     print(f"✅ Zalogowano jako {bot.user}")
@@ -287,17 +373,15 @@ async def on_ready():
     print(f"👤 Powiadomienia dla: {YOUR_USER_ID}")
     print("=" * 50)
     
-    # SYNC przy starcie
     try:
         await tree.sync()
         print("✅ Slash commands zarejestrowane!")
     except Exception as e:
         print(f"⚠️ Błąd sync przy starcie: {e}")
-        print("Użyj /sync po starcie bota!")
+        print("Użyj !sync lub /sync po starcie bota!")
     
     bot.loop.create_task(monitor_loop())
 
-# ========== URUCHOMIENIE ==========
 if __name__ == "__main__":
     if not BOT_TOKEN:
         print("💀 BRAK BOT_TOKEN!")
