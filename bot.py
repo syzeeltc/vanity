@@ -25,12 +25,24 @@ class VanitySniperBot(commands.Bot):
         self.monitor.start()
 
     async def on_ready(self):
-        print(f"✅ Bot zalogowany jako {self.user}")
-        print(f"🔫 Auto-snajp {len(VANITY_CODES)} kod(ów): {', '.join(VANITY_CODES)}")
-        print(f"⏳ Sprawdzam co {CHECK_INTERVAL} min, opóźnienie PATCH {PATCH_DELAY}s")
+        print(f"Bot zalogowany jako {self.user}")
+        print(f"Monitoruje: {', '.join(VANITY_CODES)}")
+        
+        # DIAGNOSTYKA SERWERA
+        guild = self.get_guild(GUILD_ID)
+        if guild:
+            print(f"Serwer: {guild.name}")
+            print(f"Boost tier: {guild.premium_tier}")
+            print(f"Boost count: {guild.premium_subscription_count}")
+            print(f"Features: {guild.features}")
+            if "VANITY_URL" in guild.features:
+                print("✅ Serwer MA feature VANITY_URL")
+            else:
+                print("❌ Serwer NIE MA feature VANITY_URL - potrzebne 14 boostów (lvl 3)!")
+        else:
+            print(f"❌ Nie znaleziono serwera o ID {GUILD_ID}")
 
-    async def try_claim(self, code: str):
-        """Próbuje zająć vanity przez API serwera."""
+    async def try_claim(self, code):
         url = f"https://discord.com/api/v10/guilds/{GUILD_ID}/vanity-url"
         headers = {
             "Authorization": f"Bot {TOKEN}",
@@ -44,11 +56,11 @@ class VanitySniperBot(commands.Bot):
                 return True, data
             elif resp.status == 400:
                 data = await resp.json()
-                err_code = data.get("code")
-                err_msg = data.get("message", "")
-                return False, f"Error {err_code}: {err_msg}"
+                return False, data.get("message", "Error 400")
             elif resp.status == 403:
-                return False, "Brak uprawnień (Manage Server)"
+                data = await resp.json()
+                err_code = data.get("code", "???")
+                return False, f"403 Missing Access (code {err_code}) - brak VANITY_URL feature?"
             elif resp.status == 429:
                 return False, "Rate limit"
             else:
@@ -64,41 +76,36 @@ class VanitySniperBot(commands.Bot):
             if code in self.claimed:
                 continue
 
-            # Krok 1: GET invite — jeśli 200, to na pewno zajęte (pomijamy)
             invite_url = f"https://discord.com/api/v10/invites/{code}"
             async with self.session.get(invite_url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     owner = data.get("guild", {}).get("name", "???")
-                    print(f"❌ {code} zajęty przez: {owner}")
+                    print(f"{code} zajety przez: {owner}")
                     continue
                 elif resp.status == 404:
-                    print(f"⚠️ {code} wygląda na wolny (404) — próbuję zająć PATCH-em...")
+                    print(f"{code} wolny? Probuje zajac...")
                 else:
-                    print(f"❓ {code} GET status: {resp.status}")
+                    print(f"{code} GET status: {resp.status}")
                     continue
 
-            # Krok 2: PATCH — próba zajęcia (to odróżnia wolny od zbanowanego)
             success, info = await self.try_claim(code)
             
             if success:
-                print(f"🎉🎉🎉 SUKCES! Zajęto {code}!")
+                print(f"SUKCES! Zajeto {code}!")
                 self.claimed.add(code)
                 if channel:
                     await channel.send(
-                        f"<@{YOUR_ID}> ✅ **SUKCES!** Vanity `discord.gg/{code}` zostało PRZYDZIELONE Twojemu serwerowi!\n"
-                        f"🎉 Link działa: https://discord.gg/{code}"
+                        f"<@{YOUR_ID}> SUKCES! discord.gg/{code} jest TWOJE!"
                     )
                 if len(self.claimed) == len(VANITY_CODES):
-                    print("✅ Wszystkie kody zajęte. Kończę.")
                     self.monitor.stop()
                     return
             else:
-                print(f"❌ Nie udało się zająć {code}: {info}")
+                print(f"Nie udalo sie zajac {code}: {info}")
                 if "Rate limit" in str(info):
                     await asyncio.sleep(60)
 
-            # Opóźnienie między PATCH-ami różnych kodów (unika rate limitu)
             await asyncio.sleep(PATCH_DELAY)
 
     @monitor.before_loop
