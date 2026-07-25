@@ -20,7 +20,7 @@ TARGET_URL = os.getenv("TARGET_URL")
 if not TARGET_URL:
     raise ValueError("💀 Ustaw TARGET_URL w Railway Variables!")
 
-MFA_CODE = os.getenv("MFA_CODE", "000000")  # Pobieramy z Railway Variables
+MFA_CODE = os.getenv("MFA_CODE", "000000")
 
 # ========== NAGŁÓWKI ==========
 headers = {
@@ -30,6 +30,8 @@ headers = {
 
 # ========== FUNKCJA SNIPOWANIA ==========
 def snipe():
+    global TOKEN, headers  # <-- TO MUSI BYĆ NA POCZĄTKU FUNKCJI!
+    
     url = f"https://discord.com/api/v9/guilds/{GUILD_ID}/vanity-url"
     data = {"code": TARGET_URL}
     
@@ -58,7 +60,6 @@ def snipe():
                     print("❌ Brak ticketu MFA w odpowiedzi")
                     return False
                 
-                # Wysyłamy kod MFA
                 mfa_url = "https://discord.com/api/v9/mfa/finish"
                 mfa_data = {
                     "code": MFA_CODE,
@@ -73,12 +74,10 @@ def snipe():
                     
                     if new_token:
                         print(f"✅ Nowy token wyciągnięty! {new_token[:20]}...")
-                        # Aktualizujemy token w headers i zmiennej
-                        global TOKEN, headers
                         TOKEN = new_token
                         headers["Authorization"] = new_token
                         print("🔄 Próbuję jeszcze raz z nowym tokenem...")
-                        return snipe()  # Rekurencyjna próba
+                        return snipe()
                     else:
                         print("❌ Nie otrzymano nowego tokena po MFA")
                         print(f"   Odpowiedź: {mfa_r.text}")
@@ -115,7 +114,7 @@ def snipe():
         elif r.status_code == 429:
             print("⏳ Rate limit! Czekam 60 sekund...")
             time.sleep(60)
-            return snipe()  # Próbuj ponownie
+            return snipe()
             
         else:
             print(f"⚠️ Błąd {r.status_code}: {r.text}")
@@ -130,7 +129,6 @@ def snipe():
 
 # ========== FUNKCJA KEEP-ALIVE ==========
 def keep_alive():
-    """Odświeża sesję i przedłuża życie tokena"""
     try:
         r = requests.get("https://discord.com/api/v9/users/@me", headers=headers)
         if r.status_code == 200:
@@ -162,10 +160,7 @@ while True:
     counter += 1
     print(f"\n🔄 Próba #{counter} - {time.strftime('%H:%M:%S')}")
     
-    # Najpierw odśwież sesję
     keep_alive()
-    
-    # Snipowanie
     success = snipe()
     
     if success:
@@ -173,4 +168,4 @@ while True:
     else:
         print("⏳ Nie udało się, czekam 5 minut...")
     
-    time.sleep(300)  # 5 minut
+    time.sleep(300)
