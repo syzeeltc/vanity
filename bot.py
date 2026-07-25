@@ -78,4 +78,37 @@ class VanitySniperBot(commands.Bot):
                     print(f"❓ {code} GET status: {resp.status}")
                     continue
 
-            # Krok 2: PATCH — próba zajęcia (to o
+            # Krok 2: PATCH — próba zajęcia (to odróżnia wolny od zbanowanego)
+            success, info = await self.try_claim(code)
+            
+            if success:
+                print(f"🎉🎉🎉 SUKCES! Zajęto {code}!")
+                self.claimed.add(code)
+                if channel:
+                    await channel.send(
+                        f"<@{YOUR_ID}> ✅ **SUKCES!** Vanity `discord.gg/{code}` zostało PRZYDZIELONE Twojemu serwerowi!\n"
+                        f"🎉 Link działa: https://discord.gg/{code}"
+                    )
+                if len(self.claimed) == len(VANITY_CODES):
+                    print("✅ Wszystkie kody zajęte. Kończę.")
+                    self.monitor.stop()
+                    return
+            else:
+                print(f"❌ Nie udało się zająć {code}: {info}")
+                if "Rate limit" in str(info):
+                    await asyncio.sleep(60)
+
+            # Opóźnienie między PATCH-ami różnych kodów (unika rate limitu)
+            await asyncio.sleep(PATCH_DELAY)
+
+    @monitor.before_loop
+    async def before_monitor(self):
+        await self.wait_until_ready()
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+        await super().close()
+
+bot = VanitySniperBot()
+bot.run(TOKEN)
