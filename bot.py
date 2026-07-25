@@ -29,7 +29,8 @@ YOUR_USER_ID = int(YOUR_USER_ID)
 # ========== LISTA VANITEK ==========
 TARGET_URLS = [
     "wymianakasy",
-    "wymiensiano"
+    "wymieniano",
+    "wymienwalute"
 ]
 
 # ========== PAMIĘĆ STATUSÓW ==========
@@ -47,6 +48,7 @@ def check_single_vanity(vanity_name):
     try:
         r = requests.get(url)
         
+        # ===== 200 =====
         if r.status_code == 200:
             data = r.json()
             guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
@@ -57,31 +59,37 @@ def check_single_vanity(vanity_name):
             else:
                 return "TAKEN", guild_name
         
+        # ===== 404 =====
         elif r.status_code == 404:
             try:
                 error_data = r.json()
                 error_msg = error_data.get("message", "").lower()
                 
+                # Sprawdź czy to ban
                 if "invalid" in error_msg or "banned" in error_msg or "suspended" in error_msg:
                     return "BANNED", None
                 else:
-                    previous = last_known_status.get(vanity_name)
-                    if previous and previous.get("status") in ["TAKEN", "OWN_SERVER"]:
-                        return "FREE", None
-                    else:
-                        return "UNKNOWN", None
+                    # 404 = nie istnieje = WOLNE!
+                    print(f"🔥 {vanity_name}: 404 -> WOLNE!")
+                    return "FREE", None
             except:
-                return "UNKNOWN", None
+                # Jeśli nie ma JSON (np. błąd) -> też uznajemy za WOLNE
+                print(f"🔥 {vanity_name}: 404 (brak JSON) -> WOLNE!")
+                return "FREE", None
         
+        # ===== 429 =====
         elif r.status_code == 429:
             print(f"⏳ Rate limit dla {vanity_name}, czekam 60s...")
             time.sleep(60)
             return check_single_vanity(vanity_name)
         
+        # ===== 403 =====
         elif r.status_code == 403:
             return "BANNED", None
         
+        # ===== INNE =====
         else:
+            print(f"⚠️ {vanity_name}: status {r.status_code}")
             return "UNKNOWN", None
             
     except Exception as e:
@@ -94,16 +102,11 @@ def check_all_vanities():
     for vanity in TARGET_URLS:
         status, guild_name = check_single_vanity(vanity)
         results[vanity] = {"status": status, "guild_name": guild_name}
-        last_known_status[vanity] = {"status": status, "guild_name": guild_name}
         print(f"📊 {vanity}: {status}" + (f" ({guild_name})" if guild_name else ""))
     return results
 
 # ========== POWIADOMIENIA ==========
-async def send_vanity_alert(vanity_name, status):
-    if status != "FREE":
-        print(f"⏳ Pomijam {vanity_name} ({status}) – nie jest wolne")
-        return
-    
+async def send_vanity_alert(vanity_name):
     title = "🚨🚨🚨 WOLNE!"
     emoji = "🔥"
     message = f"🎯 **Vanity:** `{vanity_name}`\n🔗 **Link:** https://discord.gg/{vanity_name}\n⚡ **USTAW TO TERAZ!**"
@@ -225,6 +228,7 @@ async def monitor_loop():
     print(f"🎯 Liczba vanitek: {len(TARGET_URLS)}")
     print("=" * 50)
     
+    # Inicjalizacja
     check_all_vanities()
     
     while not bot.is_closed():
@@ -236,13 +240,15 @@ async def monitor_loop():
                 status = data["status"]
                 previous = last_known_status.get(vanity_name, {}).get("status")
                 
+                # PINGUJ TYLKO GDY STATUS ZMIENIŁ SIĘ NA "FREE"
                 if status == "FREE" and previous != "FREE":
-                    print(f"🔥 {vanity_name} ZMIENIŁA STATUS NA WOLNE!")
-                    await send_vanity_alert(vanity_name, status)
+                    print(f"🔥🔥🔥 {vanity_name} ZMIENIŁA STATUS NA WOLNE!")
+                    await send_vanity_alert(vanity_name)
                 
+                # Aktualizuj pamięć
                 last_known_status[vanity_name] = {"status": status, "guild_name": data.get("guild_name")}
             
-            await asyncio.sleep(30)
+            await asyncio.sleep(30)  # Co 30 sekund
                 
         except Exception as e:
             print(f"💀 Błąd w pętli: {e}")
