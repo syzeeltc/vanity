@@ -6,7 +6,7 @@ from discord.ext import commands
 import asyncio
 
 # ========== ZMIENNE ŚRODOWISKOWE ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # TOKEN BOTA (NIE TWÓJ!)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("💀 Ustaw BOT_TOKEN!")
 
@@ -36,40 +36,63 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ========== SPRAWDZANIE VANITY ==========
 def check_vanity():
-    """Sprawdza czy vanity jest wolne (BEZ TOKENA!)"""
-    # Używamy PUBLICZNEGO API Discorda – nie wymaga tokena!
+    """Sprawdza czy vanity jest wolne (z obsługą zbanowanych)"""
     url = f"https://discord.com/api/v9/invites/{TARGET_URL}"
     
     try:
         r = requests.get(url)
         
+        # ===== 404 =====
         if r.status_code == 404:
-            # 404 = link nie istnieje = vanity jest WOLNE!
-            print(f"🔥 {TARGET_URL} JEST WOLNE!")
-            return True, None
-            
+            # Sprawdzamy treść błędu
+            try:
+                error_data = r.json()
+                error_msg = error_data.get("message", "").lower()
+                error_code = error_data.get("code", 0)
+                
+                # Jeśli błąd mówi o "invalid invite" lub "banned" -> jest zbanowana
+                if "invalid" in error_msg or "banned" in error_msg or "suspended" in error_msg or "restricted" in error_msg:
+                    print(f"🚫 VANITY {TARGET_URL} JEST ZBANOWANA/ZABRONIONA!")
+                    return "BANNED", None
+                else:
+                    # 404 bez komunikatu o ban = może być wolna
+                    # ALE nie jesteśmy pewni – lepiej traktować jako "niepewne"
+                    print(f"⚠️ 404 dla {TARGET_URL} – ale nie wiemy czy to ban czy wolne")
+                    return "UNKNOWN", None
+                    
+            except:
+                print(f"⚠️ 404 bez JSON – traktuję jako wolne (ryzyko)")
+                return "FREE", None
+        
+        # ===== 200 =====
         elif r.status_code == 200:
-            # 200 = link istnieje = jest zajęte
             data = r.json()
             guild_name = data.get("guild", {}).get("name", "Nieznany serwer")
             print(f"⏳ {TARGET_URL} jest ZAJĘTE przez: {guild_name}")
-            return False, guild_name
-            
+            return "TAKEN", guild_name
+        
+        # ===== 429 =====
         elif r.status_code == 429:
             print("⏳ Rate limit! Czekam 60 sekund...")
             time.sleep(60)
             return check_vanity()
-            
+        
+        # ===== 403 =====
+        elif r.status_code == 403:
+            print("🚫 VANITY JEST ZBANOWANE LUB ZABRONIONE (403)!")
+            return "BANNED", None
+        
+        # ===== INNE =====
         else:
             print(f"⚠️ Błąd {r.status_code}: {r.text}")
-            return False, None
+            return "UNKNOWN", None
             
     except requests.exceptions.RequestException as e:
         print(f"💀 Błąd sieci: {e}")
-        return False, None
+        return "UNKNOWN", None
     except Exception as e:
         print(f"💀 Nieznany błąd: {e}")
-        return False, None
+        return "UNKNOWN", None
 
 # ========== POWIADOMIENIA ==========
 async def send_alert():
@@ -84,7 +107,7 @@ async def send_alert():
                 f"🚨🚨🚨 **ALPHA! VANITY JEST WOLNE!** 🚨🚨🚨\n"
                 f"🎯 **Cel:** `{TARGET_URL}`\n"
                 f"🔗 **Link:** https://discord.gg/{TARGET_URL}\n"
-                f"⚡ **Ustaw to ręcznie w ustawieniach serwera!**"
+                f"⚡ **SPRAWDŹ RĘCZNIE – MOŻE BYĆ BAN!**"
             )
             print("✅ DM wysłane!")
     except Exception as e:
@@ -98,30 +121,60 @@ async def send_alert():
                 f"🚨🚨🚨 @everyone **VANITY JEST WOLNE!** 🚨🚨🚨\n"
                 f"🎯 **Cel:** `{TARGET_URL}`\n"
                 f"🔗 **Link:** https://discord.gg/{TARGET_URL}\n"
-                f"<@{YOUR_USER_ID}> **USTAW TO TERAZ!**"
+                f"<@{YOUR_USER_ID}> **SPRAWDŹ RĘCZNIE!**"
             )
             print("✅ Wiadomość na kanale wysłana!")
     except Exception as e:
         print(f"💀 Błąd kanału: {e}")
 
+async def send_banned_alert():
+    """Wysyła powiadomienie o zbanowanej vanity"""
+    
+    try:
+        user = await bot.fetch_user(YOUR_USER_ID)
+        if user:
+            dm_channel = await user.create_dm()
+            await dm_channel.send(
+                f"🚫🚫🚫 **ALPHA! VANITY JEST ZBANOWANA!** 🚫🚫🚫\n"
+                f"🎯 **Cel:** `{TARGET_URL}`\n"
+                f"⏳ **Nie można jej użyć – czekaj na odbanowanie!**"
+            )
+            print("✅ DM o banie wysłane!")
+    except Exception as e:
+        print(f"💀 Błąd DM: {e}")
+
 # ========== GŁÓWNA PĘTLA ==========
 async def monitor_loop():
     await bot.wait_until_ready()
-    print("🔍 Rozpoczynam monitorowanie (BEZ TWOJEGO TOKENA!)...")
+    print("🔍 Rozpoczynam monitorowanie...")
+    print(f"🎯 Cel: {TARGET_URL}")
+    print("=" * 50)
     
     while not bot.is_closed():
         try:
-            is_free, guild_name = check_vanity()
+            status, guild_name = check_vanity()
             
-            if is_free:
+            if status == "FREE":
                 print(f"🔥🔥🔥 WOLNE! {TARGET_URL} JEST DOSTĘPNE! 🔥🔥🔥")
                 await send_alert()
-                # Po znalezieniu wolnego, czekamy dłużej (żeby nie spamować)
                 await asyncio.sleep(3600)  # 1 godzina
+                
+            elif status == "BANNED":
+                print(f"🚫 ZBANOWANE! {TARGET_URL} jest zablokowane przez Discord.")
+                await send_banned_alert()
+                await asyncio.sleep(3600)  # 1 godzina (żeby nie spamować)
+                
+            elif status == "TAKEN":
+                print(f"⏳ Zajęte przez: {guild_name}")
+                await asyncio.sleep(60)
+                
+            elif status == "UNKNOWN":
+                print(f"⚠️ Nieznany status – czekam 5 minut...")
+                await asyncio.sleep(300)
+                
             else:
-                if guild_name:
-                    print(f"⏳ Zajęte przez: {guild_name}")
-                await asyncio.sleep(60)  # Sprawdzaj co minutę
+                print(f"⚠️ Nieznany status: {status}")
+                await asyncio.sleep(60)
                 
         except Exception as e:
             print(f"💀 Błąd w pętli: {e}")
@@ -130,13 +183,17 @@ async def monitor_loop():
 # ========== KOMENDY ==========
 @bot.command()
 async def vanity(ctx):
-    """Sprawdza aktualny vanity URL"""
-    is_free, guild_name = check_vanity()
+    """Sprawdza aktualny status vanity"""
+    status, guild_name = check_vanity()
     
-    if is_free:
-        await ctx.send(f"🔥🔥🔥 `{TARGET_URL}` JEST WOLNE! Ustaw to teraz!")
-    else:
+    if status == "FREE":
+        await ctx.send(f"🔥🔥🔥 `{TARGET_URL}` JEST WOLNE! Sprawdź ręcznie!")
+    elif status == "BANNED":
+        await ctx.send(f"🚫 `{TARGET_URL}` JEST ZBANOWANE/ZABRONIONE!")
+    elif status == "TAKEN":
         await ctx.send(f"⏳ `{TARGET_URL}` jest ZAJĘTE przez: {guild_name}")
+    else:
+        await ctx.send(f"⚠️ Nieznany status: {status}")
 
 @bot.command()
 async def ping(ctx):
